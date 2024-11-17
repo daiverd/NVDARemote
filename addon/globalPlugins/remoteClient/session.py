@@ -33,11 +33,11 @@ class RemoteSession:
 	transport: RelayTransport
 	localMachine: local_machine.LocalMachine
 	mode: Optional[str] = None
-	patcher: Optional[nvda_patcher.NVDAPatcher]
+	extensionMapper: Optional[nvda_patcher.RemoteExtensionMapper]
 
 	def __init__(self, local_machine: local_machine.LocalMachine, transport: RelayTransport) -> None:
 		self.localMachine = local_machine
-		self.patcher = None
+		self.extensionMapper = None
 		self.transport = transport
 		self.transport.callback_manager.registerCallback(
 			'msg_version_mismatch', self.handleVersionMismatch)
@@ -80,10 +80,10 @@ class SlaveSession(RemoteSession):
 	"""Session that runs on the slave and manages state."""
 
 	mode: str = 'slave'
-	patcher: nvda_patcher.NVDASlavePatcher
+	extensionMapper: nvda_patcher.SlaveExtensionMapper
 	masters: Dict[int, Dict[str, Any]]
 	masterDisplaySizes: List[int]
-	patchCallbacksAdded: bool
+	extensionsRegistered: bool
 
 	def __init__(self, *args: Any, **kwargs: Any) -> None:
 		super().__init__(*args, **kwargs)
@@ -99,8 +99,8 @@ class SlaveSession(RemoteSession):
 			'msg_index', self.recvIndex)
 		self.transport.callback_manager.registerCallback(
 			TransportEvents.CLOSING, self.handleTransportClosing)
-		self.patcher = nvda_patcher.NVDASlavePatcher()
-		self.patchCallbacksAdded = False
+		self.extensionMapper = nvda_patcher.SlaveExtensionMapper(self.transport)
+		self.extensionsRegistered = False
 		self.transport.callback_manager.registerCallback(
 			'msg_channel_joined', self.handleChannelJoined)
 		self.transport.callback_manager.registerCallback(
@@ -117,10 +117,10 @@ class SlaveSession(RemoteSession):
 			'msg_send_SAS', self.localMachine.sendSAS)
 
 	def handleClientConnected(self, client: Optional[Dict[str, Any]] = None, **kwargs: Any) -> None:
-		self.patcher.registerExtensionPoints()
-		if not self.patchCallbacksAdded:
+		self.extensionMapper.registerExtensionPoints()
+		if not self.extensionsRegistered:
 			self.addPatchCallbacks()
-			self.patchCallbacksAdded = True
+			self.extensionsRegistered = True
 		cues.client_connected()
 		if client['connection_type'] == 'master':
 			self.masters[client['id']]['active'] = True
@@ -132,21 +132,21 @@ class SlaveSession(RemoteSession):
 			self.handleClientConnected(client)
 
 	def handleTransportClosing(self) -> None:
-		self.patcher.unregisterExtensionPoints()
-		if self.patchCallbacksAdded:
+		self.extensionMapper.unregisterExtensionPoints()
+		if self.extensionsRegistered:
 			self.removePatchCallbacks()
-			self.patchCallbacksAdded = False
+			self.extensionsRegistered = False
 
 	def handleTransportDisconnected(self):
 		cues.client_connected()
-		self.patcher.unregisterExtensionPoints()
+		self.extensionMapper.unregisterExtensionPoints()
 
 	def handleClientDisconnected(self, client=None, **kwargs):
 		cues.client_disconnected()
 		if client['connection_type'] == 'master':
 			del self.masters[client['id']]
 		if not self.masters:
-			self.patcher.unregisterExtensionPoints()
+			self.extensionMapper.unregisterExtensionPoints()
 
 	def setDisplaySize(self, sizes=None, **kwargs):
 		self.masterDisplaySizes = sizes if sizes else [
@@ -174,12 +174,12 @@ class SlaveSession(RemoteSession):
 	def addPatchCallbacks(self) -> None:
 		patcher_callbacks = self._getPatcherCallbacks()
 		for event, callback in patcher_callbacks:
-			self.patcher.registerCallback(event, callback)
+			self.extensionMapper.registerCallback(event, callback)
 
 	def removePatchCallbacks(self):
 		patcher_callbacks = self._getPatcherCallbacks()
 		for event, callback in patcher_callbacks:
-			self.patcher.unregisterCallback(event, callback)
+			self.extensionMapper.unregisterCallback(event, callback)
 
 	def _filterUnsupportedSpeechCommands(self, speechSequence: List[Any]) -> List[Any]:
 		return list([
@@ -231,15 +231,15 @@ class SlaveSession(RemoteSession):
 class MasterSession(RemoteSession):
 
 	mode: str = 'master'
-	patcher: nvda_patcher.NVDAMasterPatcher
+	extensionMapper: nvda_patcher.MasterExtensionMapper
 	slaves: Dict[int, Dict[str, Any]]
-	patchCallbacksAdded: bool
+	extensionsRegistered: bool
 
 	def __init__(self, *args: Any, **kwargs: Any) -> None:
 		super().__init__(*args, **kwargs)
 		self.slaves = defaultdict(dict)
-		self.patcher = nvda_patcher.NVDAMasterPatcher()
-		self.patchCallbacksAdded = False
+		self.extensionMapper = nvda_patcher.MasterExtensionMapper(transport=self.transport)
+		self.extensionsRegistered = False
 		self.transport.callback_manager.registerCallback(
 			'msg_speak', self.localMachine.speak)
 		self.transport.callback_manager.registerCallback(
@@ -301,18 +301,18 @@ class MasterSession(RemoteSession):
 			self.handleClientConnected(client)
 
 	def handleClientConnected(self, client=None, **kwargs):
-		self.patcher.registerExtensionPoints()
-		if not self.patchCallbacksAdded:
+		self.extensionMapper.registerExtensionPoints()
+		if not self.extensionsRegistered:
 			self.addPatchCallbacks()
-			self.patchCallbacksAdded = True
+			self.extensionsRegistered = True
 		self.sendBrailleInfo()
 		cues.client_connected()
 
 	def handleClientDisconnected(self, client=None, **kwargs):
-		self.patcher.unregisterExtensionPoints()
-		if self.patchCallbacksAdded:
+		self.extensionMapper.unregisterExtensionPoints()
+		if self.extensionsRegistered:
 			self.removePatchCallbacks()
-			self.patchCallbacksAdded = False
+			self.extensionsRegistered = False
 		cues.client_disconnected()
 
 	def sendBrailleInfo(self, display: Optional[Any] = None, displaySize: Optional[int] = None, **kwargs: Any) -> None:
@@ -330,10 +330,10 @@ class MasterSession(RemoteSession):
 		patcher_callbacks = (('braille_input', self.brailleInput),
 							 ('set_display', self.sendBrailleInfo))
 		for event, callback in patcher_callbacks:
-			self.patcher.registerCallback(event, callback)
+			self.extensionMapper.registerCallback(event, callback)
 
 	def removePatchCallbacks(self):
 		patcher_callbacks = (('braille_input', self.brailleInput),
 							 ('set_display', self.sendBrailleInfo))
 		for event, callback in patcher_callbacks:
-			self.patcher.unregisterCallback(event, callback)
+			self.extensionMapper.unregisterCallback(event, callback)
