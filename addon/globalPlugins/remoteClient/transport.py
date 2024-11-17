@@ -10,6 +10,8 @@ from queue import Queue
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 from enum import Enum
 
+from .protocol import RemoteMessageType
+
 log = getLogger('transport')
 
 from . import configuration
@@ -194,7 +196,10 @@ class TCPTransport(Transport):
 			except socket.error:
 				return
 
-	def send(self, type, **kwargs):
+	def send(self, type: RemoteMessageType, **kwargs):
+		# enum types become strings when serialized, so we need to convert them
+		if isinstance(type, Enum):
+			type = type.value
 		obj = self.serializer.serialize(type=type, **kwargs)
 		if self.connected:
 			self.queue.put(obj)

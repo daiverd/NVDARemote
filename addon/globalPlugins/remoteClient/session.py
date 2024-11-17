@@ -13,6 +13,7 @@ import versionInfo
 from logHandler import log
 
 from . import configuration, connection_info, cues, local_machine, nvda_patcher
+from .protocol import RemoteMessageType
 from .transport import RelayTransport, TransportEvents
 
 addonHandler.initTranslation()
@@ -116,7 +117,7 @@ class SlaveSession(RemoteSession):
 			'msg_send_SAS', self.localMachine.sendSAS)
 
 	def handleClientConnected(self, client: Optional[Dict[str, Any]] = None, **kwargs: Any) -> None:
-		self.patcher.patch()
+		self.patcher.registerExtensionPoints()
 		if not self.patchCallbacksAdded:
 			self.addPatchCallbacks()
 			self.patchCallbacksAdded = True
@@ -131,21 +132,21 @@ class SlaveSession(RemoteSession):
 			self.handleClientConnected(client)
 
 	def handleTransportClosing(self) -> None:
-		self.patcher.unpatch()
+		self.patcher.unregisterExtensionPoints()
 		if self.patchCallbacksAdded:
 			self.removePatchCallbacks()
 			self.patchCallbacksAdded = False
 
 	def handleTransportDisconnected(self):
 		cues.client_connected()
-		self.patcher.unpatch()
+		self.patcher.unregisterExtensionPoints()
 
 	def handleClientDisconnected(self, client=None, **kwargs):
 		cues.client_disconnected()
 		if client['connection_type'] == 'master':
 			del self.masters[client['id']]
 		if not self.masters:
-			self.patcher.unpatch()
+			self.patcher.unregisterExtensionPoints()
 
 	def setDisplaySize(self, sizes=None, **kwargs):
 		self.masterDisplaySizes = sizes if sizes else [
@@ -188,19 +189,19 @@ class SlaveSession(RemoteSession):
 
 	def speak(self, speechSequence: List[Any], priority: Optional[str]) -> None:
 		self.transport.send(
-			type="speak",
+			type=RemoteMessageType.speak,
 			sequence=self._filterUnsupportedSpeechCommands(speechSequence),
 			priority=priority
 		)
 
 	def cancelSpeech(self):
-		self.transport.send(type="cancel")
+		self.transport.send(type=RemoteMessageType.cancel)
 
 	def pauseSpeech(self, switch):
-		self.transport.send(type="pause_speech", switch=switch)
+		self.transport.send(type=RemoteMessageType.pause_speech, switch=switch)
 
 	def beep(self, hz: float, length: int, left: int = 50, right: int = 50, **kwargs: Any) -> None:
-		self.transport.send(type='tone', hz=hz, length=length,
+		self.transport.send(type=RemoteMessageType.tone, hz=hz, length=length,
 							left=left, right=right, **kwargs)
 
 	def playWaveFile(self, **kwargs):
@@ -213,12 +214,12 @@ class SlaveSession(RemoteSession):
 			# Including it allows for forward compatibility if requirements change.
 			'asynchronous': True,
 		})
-		self.transport.send(type='wave', **kwargs)
+		self.transport.send(type=RemoteMessageType.wave, **kwargs)
 
 	def display(self, cells):
 		# Only send braille data when there are controlling machines with a braille display
 		if self.hasBrailleMasters():
-			self.transport.send(type="display", cells=cells)
+			self.transport.send(type=RemoteMessageType.display, cells=cells)
 
 	def hasBrailleMasters(self):
 		return bool([i for i in self.masterDisplaySizes if i > 0])
@@ -300,7 +301,7 @@ class MasterSession(RemoteSession):
 			self.handleClientConnected(client)
 
 	def handleClientConnected(self, client=None, **kwargs):
-		self.patcher.patch()
+		self.patcher.registerExtensionPoints()
 		if not self.patchCallbacksAdded:
 			self.addPatchCallbacks()
 			self.patchCallbacksAdded = True
@@ -308,7 +309,7 @@ class MasterSession(RemoteSession):
 		cues.client_connected()
 
 	def handleClientDisconnected(self, client=None, **kwargs):
-		self.patcher.unpatch()
+		self.patcher.unregisterExtensionPoints()
 		if self.patchCallbacksAdded:
 			self.removePatchCallbacks()
 			self.patchCallbacksAdded = False
@@ -319,11 +320,11 @@ class MasterSession(RemoteSession):
 			display = braille.handler.display
 		if displaySize is None:
 			displaySize = braille.handler.displaySize
-		self.transport.send(type="set_braille_info",
+		self.transport.send(type=RemoteMessageType.set_braille_info,
 							name=display.name, numCells=displaySize)
 
 	def brailleInput(self, **kwargs: Any) -> None:
-		self.transport.send(type="braille_input", **kwargs)
+		self.transport.send(type=RemoteMessageType.braille_input, **kwargs)
 
 	def addPatchCallbacks(self):
 		patcher_callbacks = (('braille_input', self.brailleInput),

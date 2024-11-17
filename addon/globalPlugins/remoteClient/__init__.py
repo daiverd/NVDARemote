@@ -2,6 +2,8 @@ import logging
 
 from typing import Optional, Set, Dict, List, Any, Callable, Union, Type, Tuple
 
+from .protocol import RemoteMessageType
+
 from .secureDesktop import SecureDesktopHandler
 
 from .menu import RemoteMenu
@@ -148,7 +150,7 @@ class GlobalPlugin(_GlobalPlugin):
 	def pushClipboard(self):
 		connector = self.slaveTransport or self.masterTransport
 		try:
-			connector.send(type='set_clipboard_text', text=api.getClipData())
+			connector.send(type=RemoteMessageType.set_clipboard_text, text=api.getClipData())
 			cues.clipboard_pushed()
 		except TypeError:
 			log.exception("Unable to push clipboard")
@@ -159,7 +161,7 @@ class GlobalPlugin(_GlobalPlugin):
 			ui.message(_("Not connected."))
 			return
 		try:
-			connector.send(type='set_clipboard_text', text=api.getClipData())
+			connector.send(type=RemoteMessageType.set_clipboard_text, text=api.getClipData())
 			cues.clipboard_pushed()
 			ui.message(_("Clipboard pushed"))
 		except TypeError:
@@ -188,7 +190,7 @@ class GlobalPlugin(_GlobalPlugin):
 		gui.runScriptModalDialog(dlg, callback=handle_dlg_complete)
 
 	def sendSAS(self):
-		self.masterTransport.send('send_SAS')
+		self.masterTransport.send(RemoteMessageType.send_SAS)
 
 	def disconnect(self):
 		if self.masterTransport is None and self.slaveTransport is None:
@@ -383,7 +385,7 @@ class GlobalPlugin(_GlobalPlugin):
 			if script in self.localScripts:
 				wx.CallAfter(script, gesture)
 				return True
-		self.masterTransport.send(type="key", **kwargs)
+		self.masterTransport.send(type=RemoteMessageType.key, **kwargs)
 		return True #Don't pass it on
 
 	@script(
@@ -409,15 +411,15 @@ class GlobalPlugin(_GlobalPlugin):
 	def releaseKeys(self):
 		# release all pressed keys in the guest.
 		for k in self.keyModifiers:
-			self.masterTransport.send(type="key", vk_code=k[0], extended=k[1], pressed=False)
+			self.masterTransport.send(type=RemoteMessageType.key, vk_code=k[0], extended=k[1], pressed=False)
 		self.keyModifiers = set()
 
 	def setReceivingBraille(self, state):
 		if state and self.masterSession.patchCallbacksAdded and braille.handler.enabled:
-			self.masterSession.patcher.patchBrailleInput()
+			self.masterSession.patcher.registerBrailleInputHandler()
 			self.localMachine.receivingBraille=True
 		elif not state:
-			self.masterSession.patcher.unpatchBrailleInput()
+			self.masterSession.patcher.unregisterBrailleInputHandler()
 			self.localMachine.receivingBraille=False
 
 	def verifyConnect(self, con_info):
