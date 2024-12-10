@@ -1,20 +1,22 @@
-from dataclasses import dataclass
 import json
 import socket
 import ssl
 import threading
 import uuid
-from typing import Optional, Tuple, Any
-import shlobj
-
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Optional, Tuple
+
+import shlobj
 from logHandler import log
+from winAPI.secureDesktop import post_secureDesktopStateChange
 
 from . import bridge, server
-from .transport import RelayTransport
-from .session import SlaveSession
+from .protocol import RemoteMessageType
 from .serializer import JSONSerializer
-from winAPI.secureDesktop import post_secureDesktopStateChange
+from .session import SlaveSession
+from .transport import RelayTransport
+
 
 def get_program_data_temp_path() -> Path:
 	"""Get the system's program data temp directory path."""
@@ -78,13 +80,8 @@ class SecureDesktopHandler:
 			self.leave_secure_desktop()
 			
 		if self._slave_session is not None and self._slave_session.transport is not None:
-			try:
-				self._slave_session.transport.callback_manager.unregisterCallback(
-				'msg_set_braille_info',
-				self._on_master_display_change
-			)
-			except ValueError:
-				pass
+			transport = self._slave_session.transport
+			transport.unregisterInbound(RemoteMessageType.set_braille_info, self._on_master_display_change)
 		self._slave_session = session
 
 	def _on_secure_desktop_change(self, isSecureDesktop: Optional[bool] = None) -> None:
@@ -121,8 +118,8 @@ class SecureDesktopHandler:
 			channel=channel,
 			insecure=True
 		)
-		self.sd_relay.callback_manager.registerCallback('msg_client_joined', self._on_master_display_change)
-		self.slave_session.transport.callback_manager.registerCallback('msg_set_braille_info', self._on_master_display_change)
+		self.sd_relay.registerInbound(RemoteMessageType.client_joined, self._on_master_display_change)
+		self.slave_session.transport.registerInbound(RemoteMessageType.set_braille_info, self._on_master_display_change)
 		
 		self.sd_bridge = bridge.BridgeTransport(self.slave_session.transport, self.sd_relay)
 		
@@ -151,10 +148,7 @@ class SecureDesktopHandler:
 			self.sd_relay = None
 
 		if self.slave_session is not None and self.slave_session.transport is not None:
-			self.slave_session.transport.callback_manager.unregisterCallback(
-				'msg_set_braille_info',
-				self._on_master_display_change
-			)
+			self.slave_session.transport.unregisterInbound(RemoteMessageType.set_braille_info, self._on_master_display_change)
 			self.slave_session.setDisplaySize()
 		
 		try:
@@ -192,6 +186,6 @@ class SecureDesktopHandler:
 		"""Handle display size changes."""
 		if self.sd_relay is not None and self.slave_session is not None:
 			self.sd_relay.send(
-				type='set_display_size',
+				type=RemoteMessageType.set_display_size,
 				sizes=self.slave_session.masterDisplaySizes
 			)

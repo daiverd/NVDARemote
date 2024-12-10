@@ -1,59 +1,82 @@
-from urllib.parse import parse_qs, urlencode, urlparse
+from dataclasses import dataclass
+from enum import Enum
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from . import socket_utils
+from .protocol import SERVER_PORT, URL_PREFIX
 
-URL_PREFIX = 'nvdaremote://'
 
 class URLParsingError(Exception):
 	"""Raised if it's impossible to parse out the URL"""
 
-class ConnectionInfo:
 
-	def __init__(self, hostname, mode, key, port=socket_utils.SERVER_PORT):
-		self.hostname = hostname
-		self.mode = mode
-		self.key = key
-		self.port = port or socket_utils.SERVER_PORT
+class ConnectionMode(Enum):
+	MASTER = 'master'
+	SLAVE = 'slave'
+
+
+class ConnectionState(Enum):
+	CONNECTED = 'connected'
+	DISCONNECTED = 'disconnected'
+	CONNECTING = 'connecting'
+	DISCONNECTING = 'disconnecting'
+
+@dataclass
+class ConnectionInfo:
+	hostname: str
+	mode: ConnectionMode
+	key: str
+	port: int = SERVER_PORT
+
+	def __post_init__(self):
+		self.port = self.port or SERVER_PORT
+		self.mode = ConnectionMode(self.mode)
 
 	@classmethod
-	def from_url(cls, url):
-		parsed_url = urlparse(url)
-		parsed_query = parse_qs(parsed_url.query)
-		hostname = parsed_url.hostname
-		port = parsed_url.port
-		key = parsed_query.get('key', [""])[0]
-		mode = parsed_query.get('mode', [""])[0].lower()
+	def fromURL(cls, url):
+		parsedUrl = urlparse(url)
+		parsedQuery = parse_qs(parsedUrl.query)
+		hostname = parsedUrl.hostname
+		port = parsedUrl.port
+		key = parsedQuery.get('key', [""])[0]
+		mode = parsedQuery.get('mode', [""])[0].lower()
 		if not hostname:
 			raise URLParsingError("No hostname provided")
 		if not key:
 			raise URLParsingError("No key provided")
 		if not mode:
 			raise URLParsingError("No mode provided")
-		if mode not in ('master', 'slave'):
-			raise URLParsingError("Invalud mode provided: %r" % mode)
+		try:
+			ConnectionMode(mode)
+		except ValueError:
+			raise URLParsingError("Invalid mode provided: %r" % mode)
 		return cls(hostname=hostname, mode=mode, key=key, port=port)
 
-	def __repr__(self):
-		return "{classname} (hostname={hostname}, port={port}, mode={mode}, key={key})".format(classname=self.__class__.__name__, hostname=self.hostname, port=self.port, mode=self.mode, key=self.key)
 
-	def get_address(self):
-		hostname = (self.hostname if ':' not in self.hostname else '[' + self.hostname + ']')
-		return '{hostname}:{port}'.format(hostname=hostname, port=self.port)
+	def getAddress(self):
+		# Handle IPv6 addresses by adding brackets if needed
+		hostname = f'[{self.hostname}]' if ':' in self.hostname else self.hostname
+		return f'{hostname}:{self.port}'
 
-	def get_url_to_connect(self):
-		result = URL_PREFIX + socket_utils.hostport_to_address((self.hostname, self.port))
-		result += '?'
-		mode = self.mode
-		if mode == 'master':
-			mode = 'slave'
-		elif mode == 'slave':
-			mode = 'master'
-		result += urlencode(dict(key=self.key, mode=mode))
-		return result
+	def _build_url(self, mode: ConnectionMode):
+		# Build URL components
+		netloc = socket_utils.hostPortToAddress((self.hostname, self.port))
+		query = urlencode({'key': self.key, 'mode': mode if isinstance(mode, str) else mode.value})
+		
+		# Use urlunparse for proper URL construction
+		return urlunparse((
+			URL_PREFIX.split('://')[0],  # scheme from URL_PREFIX
+			netloc,        # network location
+			'',           # path
+			'',           # params
+			query,        # query string
+			''            # fragment
+		))
 
-	def get_url(self):
-		result = URL_PREFIX + socket_utils.hostport_to_address((self.hostname, self.port))
-		result += '?'
-		mode = self.mode
-		result += urlencode(dict(key=self.key, mode=mode))
-		return result
+	def getURLToConnect(self):
+		# Flip master/slave for connection URL
+		connect_mode = ConnectionMode.SLAVE if self.mode == ConnectionMode.MASTER else ConnectionMode.MASTER
+		return self._build_url(connect_mode.value)
+
+	def getURL(self):
+		return self._build_url(self.mode)
